@@ -216,7 +216,7 @@ void Fuzzer::Run(int argc, char **argv) {
     }
     coverage_mutex.Unlock();
     
-    printf("\nTotal execs: %lld\nUnique samples: %lld (%lld discarded)\nCrashes: %lld (%lld unique)\nHangs: %lld\nOffsets: %zu\nExecs/s: %lld\n", total_execs, num_samples, num_samples_discarded, num_crashes, num_unique_crashes, num_hangs, num_offsets, (total_execs - last_execs) / secs_to_sleep);
+    printf("\nTotal execs: %lld\nUnique samples: %lld (%lld discarded)\nCrash events observed: %lld\nCrash signature buckets: %lld\nTimeout events observed: %lld\nHang artifact saving: %s\nOffsets: %zu\nExecs/s: %lld\n", total_execs, num_samples, num_samples_discarded, num_crashes, num_unique_crashes, num_hangs, save_hangs ? "enabled" : "disabled", num_offsets, (total_execs - last_execs) / secs_to_sleep);
     last_execs = total_execs;
     
     if (state == FUZZING && dry_run) {
@@ -265,13 +265,16 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
   // save crashes and hangs immediately when they are detected
   if (result == CRASH) {
     string crash_desc = tc->instrumentation->GetCrashName();
+    string crash_signature = tc->instrumentation->GetCrashSignature();
     
     if (crash_reproduce_retries > 0) {
         if (TryReproduceCrash(tc, sample, init_timeout, timeout) == CRASH) {
             // get a hopefully better name
             crash_desc = tc->instrumentation->GetCrashName();
+            crash_signature = tc->instrumentation->GetCrashSignature();
         } else {
             crash_desc = "flaky_" + crash_desc;
+            crash_signature = "flaky_" + crash_signature;
         }
     }
     
@@ -281,11 +284,11 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
     crash_mutex.Lock();
     num_crashes++;
 
-    auto crash_it = unique_crashes.find(crash_desc);
+    auto crash_it = unique_crashes.find(crash_signature);
     if(crash_it == unique_crashes.end()) {
       should_save_crash = true;
       duplicates = 1;
-      unique_crashes[crash_desc] = 1;
+      unique_crashes[crash_signature] = 1;
       num_unique_crashes++;
     } else {
       if(crash_it->second < MAX_IDENTICAL_CRASHES) {
@@ -306,7 +309,7 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
 
       if (server) {
         server_mutex.Lock();
-        server->ReportCrash(sample, crash_desc);
+        server->ReportCrash(sample, crash_signature);
         server_mutex.Unlock();
       }
     }
