@@ -25,6 +25,7 @@ limitations under the License.
 
 #include <vector>
 #include <set>
+#include <stdint.h>
 
 #define DETERMINISTIC_MUTATE_BYTES_NEXT 20
 #define DETERMINISTIC_MUTATE_BYTES_PREVIOUS 3
@@ -652,4 +653,17 @@ public:
 protected:
 
   std::vector<Range> *ranges;
+};
+
+class BmpAwareMutator : public Mutator {
+public:
+  bool Mutate(Sample *inout_sample, PRNG *prng, std::vector<Sample *> &all_samples) override;
+
+private:
+  bool IsLikelyBmp(Sample *sample);
+  uint16_t ReadLE16(Sample *sample, size_t off);
+  uint32_t ReadLE32(Sample *sample, size_t off);
+  void WriteLE16(Sample *sample, size_t off, uint16_t value);
+  void WriteLE32(Sample *sample, size_t off, uint32_t value);
+  bool RebuildValid8bppBmp(Sample *sample, PRNG *prng);
 };

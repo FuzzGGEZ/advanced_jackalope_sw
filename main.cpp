@@ -21,6 +21,7 @@ limitations under the License.
 #include "mutators/grammar/grammar.h"
 #include "mutators/grammar/grammarmutator.h"
 #include "mutators/grammar/grammarminimizer.h"
+#include <stdlib.h>
 
 
 class BinaryFuzzer : public Fuzzer {
@@ -61,6 +62,23 @@ Mutator * BinaryFuzzer::CreateMutator(int argc, char **argv, ThreadContext *tc) 
   pselect->AddMutator(new BlockFlipMutator(1, 64, true), 0.1);
   pselect->AddMutator(new BlockDuplicateMutator(1, 128, 1, 8), 0.05);
   pselect->AddMutator(new BlockDuplicateMutator(1, 16, 1, 64), 0.05);
+double bmp_mutator_prob = 0.0;
+char *bmp_mutator_prob_option = GetOption("-bmp_mutator_prob", argc, argv);
+if (bmp_mutator_prob_option) {
+  bmp_mutator_prob = atof(bmp_mutator_prob_option);
+}
+
+if (bmp_mutator_prob > 0.0) {
+  if (bmp_mutator_prob >= 1.0) {
+    bmp_mutator_prob = 0.999;
+  }
+
+  const double generic_weight = 2.0;
+  double bmp_mutator_weight =
+      (bmp_mutator_prob * generic_weight) / (1.0 - bmp_mutator_prob);
+
+  pselect->AddMutator(new BmpAwareMutator(), bmp_mutator_weight);
+}
 
   InterestingValueMutator *iv_mutator = NULL;
   if(dictionary) {

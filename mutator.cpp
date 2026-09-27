@@ -23,6 +23,8 @@ limitations under the License.
 #include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <stdint.h>
+#include <vector>
 
 Mutex RepeatMutator::stats_mutex;
 uint64_t RepeatMutator::stats[REPEAT_STATS];
@@ -596,3 +598,433 @@ void RepeatMutator::LoadGlobalState(FILE *fp) {
   HierarchicalMutator::LoadGlobalState(fp);
 }
 
+bool BmpAwareMutator::IsLikelyBmp(Sample *sample) {
+  if (sample->size < 54) return false;
+  return sample->bytes[0] == 'B' && sample->bytes[1] == 'M';
+}
+
+uint16_t BmpAwareMutator::ReadLE16(Sample *sample, size_t off) {
+  if (off + 2 > sample->size) return 0;
+  return ((uint8_t)sample->bytes[off]) |
+         ((uint8_t)sample->bytes[off + 1] << 8);
+}
+
+uint32_t BmpAwareMutator::ReadLE32(Sample *sample, size_t off) {
+  if (off + 4 > sample->size) return 0;
+  return ((uint8_t)sample->bytes[off]) |
+         ((uint8_t)sample->bytes[off + 1] << 8) |
+         ((uint8_t)sample->bytes[off + 2] << 16) |
+         ((uint8_t)sample->bytes[off + 3] << 24);
+}
+
+void BmpAwareMutator::WriteLE16(Sample *sample, size_t off, uint16_t value) {
+  if (off + 2 > sample->size) return;
+  sample->bytes[off] = value & 0xff;
+  sample->bytes[off + 1] = (value >> 8) & 0xff;
+}
+
+void BmpAwareMutator::WriteLE32(Sample *sample, size_t off, uint32_t value) {
+  if (off + 4 > sample->size) return;
+  sample->bytes[off] = value & 0xff;
+  sample->bytes[off + 1] = (value >> 8) & 0xff;
+  sample->bytes[off + 2] = (value >> 16) & 0xff;
+  sample->bytes[off + 3] = (value >> 24) & 0xff;
+}
+
+bool BmpAwareMutator::Mutate(Sample *inout_sample, PRNG *prng, std::vector<Sample *> &all_samples) {
+  if (!IsLikelyBmp(inout_sample)) return true;
+
+  static const uint32_t interesting32[] = {
+    0, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32,
+    63, 64, 127, 128, 255, 256, 257,
+    511, 512, 1023, 1024, 2047, 2048,
+    4095, 4096, 4097,
+    0x7fffffff, 0x80000000, 0xffffffff,0xfffffffe,
+    0xffff0000,0x80000001
+  };
+
+  static const uint16_t bitcounts[] = {
+    1, 4, 8, 16, 24, 32
+  };
+
+  const size_t ninteresting = sizeof(interesting32) / sizeof(interesting32[0]);
+  const size_t nbitcounts = sizeof(bitcounts) / sizeof(bitcounts[0]);
+
+  uint32_t offbits = ReadLE32(inout_sample, 0x0A);
+  int choice = prng->Rand(0, 18);
+
+  switch (choice) {
+    case 0:
+      WriteLE32(inout_sample, 0x12, interesting32[prng->Rand() % ninteresting]);
+      break;
+
+    case 1:
+      if (prng->Rand(0, 1)) {
+        WriteLE32(inout_sample, 0x16, interesting32[prng->Rand() % ninteresting]);
+      } else {
+        WriteLE32(inout_sample, 0x16, 0xffffffff - prng->Rand(0, 4096));
+      }
+      break;
+
+    case 2:
+      WriteLE16(inout_sample, 0x1C, bitcounts[prng->Rand() % nbitcounts]);
+      break;
+
+    case 3:
+      WriteLE32(inout_sample, 0x1E, prng->Rand(0, 3));
+      break;
+
+    case 4:
+      WriteLE32(inout_sample, 0x22, interesting32[prng->Rand() % ninteresting]);
+      break;
+
+    case 5:
+      WriteLE32(inout_sample, 0x0A, 54 + prng->Rand(0, 2048));
+      break;
+
+    case 6:
+      WriteLE32(inout_sample, 0x02, (uint32_t)inout_sample->size + prng->Rand(0, 4096));
+      break;
+
+    case 7:
+      WriteLE32(inout_sample, 0x2E, prng->Rand(0, 512));
+      break;
+
+    case 8:
+      WriteLE16(inout_sample, 0x1A, prng->Rand(0, 4));
+      break;
+
+    case 9:
+      WriteLE32(inout_sample, 0x0E, interesting32[prng->Rand() % ninteresting]);
+      break;
+
+    case 10:
+      if (offbits < inout_sample->size) {
+        size_t pos = offbits + (prng->Rand() % (inout_sample->size - offbits));
+        inout_sample->bytes[pos] ^= (1 << (prng->Rand() % 8));
+      }
+      break;
+
+    case 11: {
+      size_t palette_start = 54;
+      size_t palette_end = offbits;
+      if (palette_end > palette_start && palette_end <= inout_sample->size) {
+        size_t pos = palette_start + (prng->Rand() % (palette_end - palette_start));
+        inout_sample->bytes[pos] = prng->Rand() & 0xff;
+      }
+      break;
+    }
+    case 12:
+      RebuildValid8bppBmp(inout_sample, prng);
+      break;
+    
+      case 13: {
+      // v4.1: Strong bfOffBits mutation.
+      // Goal: confuse pixel-data start calculation.
+      uint32_t file_size = (uint32_t)inout_sample->size;
+      uint32_t dib_size = ReadLE32(inout_sample, 0x0E);
+      uint32_t header_end = 14 + dib_size;
+
+      uint32_t candidates[] = {
+        0,
+        1,
+        2,
+        13,
+        14,
+        15,
+        53,
+        54,
+        header_end,
+        header_end > 0 ? header_end - 1 : 0,
+        header_end + 1,
+        offbits,
+        offbits > 0 ? offbits - 1 : 0,
+        offbits + 1,
+        file_size > 0 ? file_size - 1 : 0,
+        file_size,
+        file_size + 1,
+        file_size + (uint32_t)prng->Rand(2, 256),
+        0xffffffff
+      };
+
+      size_t n = sizeof(candidates) / sizeof(candidates[0]);
+      WriteLE32(inout_sample, 0x0A, candidates[prng->Rand() % n]);
+      break;
+    }
+
+    case 14: {
+      // v4.1: Strong biSizeImage mutation.
+      // Goal: break internal copy/fill size calculation.
+      uint32_t file_size = (uint32_t)inout_sample->size;
+      uint32_t pixel_bytes = 0;
+
+      if (offbits < file_size) {
+        pixel_bytes = file_size - offbits;
+      }
+
+      uint32_t candidates[] = {
+        0,
+        1,
+        2,
+        3,
+        4,
+        15,
+        16,
+        31,
+        32,
+        255,
+        256,
+        257,
+        pixel_bytes,
+        pixel_bytes > 0 ? pixel_bytes - 1 : 0,
+        pixel_bytes + 1,
+        pixel_bytes + (uint32_t)prng->Rand(16, 4096),
+        file_size,
+        file_size + (uint32_t)prng->Rand(16, 4096),
+        0x7fffffff,
+        0xffffffff
+      };
+
+      size_t n = sizeof(candidates) / sizeof(candidates[0]);
+      WriteLE32(inout_sample, 0x22, candidates[prng->Rand() % n]);
+      break;
+    }
+
+    case 15: {
+      // v4.1: Strong bfSize mutation.
+      // Goal: desync declared file size from real file size.
+      uint32_t file_size = (uint32_t)inout_sample->size;
+
+      uint32_t candidates[] = {
+        0,
+        1,
+        2,
+        14,
+        54,
+        offbits,
+        offbits > 0 ? offbits - 1 : 0,
+        offbits + 1,
+        file_size,
+        file_size > 0 ? file_size - 1 : 0,
+        file_size + 1,
+        file_size + (uint32_t)prng->Rand(16, 4096),
+        0x7fffffff,
+        0xffffffff
+      };
+
+      size_t n = sizeof(candidates) / sizeof(candidates[0]);
+      WriteLE32(inout_sample, 0x02, candidates[prng->Rand() % n]);
+      break;
+    }
+
+    case 16: {
+      // v4.1: Width boundary mutation.
+      // Goal: disturb stride and pixel-buffer size calculation.
+      uint32_t candidates[] = {
+        0,
+        1,
+        2,
+        3,
+        4,
+        7,
+        8,
+        15,
+        16,
+        31,
+        32,
+        63,
+        64,
+        127,
+        128,
+        255,
+        256,
+        257,
+        511,
+        512,
+        1023,
+        1024,
+        1025,
+        0x7fffffff,
+        0xffffffff
+      };
+
+      size_t n = sizeof(candidates) / sizeof(candidates[0]);
+      WriteLE32(inout_sample, 0x12, candidates[prng->Rand() % n]);
+      break;
+    }
+
+    case 17: {
+      // v4.1: Height boundary mutation.
+      // Goal: disturb top-down/bottom-up and total image size calculation.
+      uint32_t candidates[] = {
+        0,
+        1,
+        2,
+        3,
+        4,
+        7,
+        8,
+        15,
+        16,
+        31,
+        32,
+        63,
+        64,
+        127,
+        128,
+        255,
+        256,
+        257,
+        511,
+        512,
+        1023,
+        1024,
+        1025,
+        0xffffffff, // -1
+        0xfffffffe, // -2
+        0xffffff00, // -256
+        0x80000000
+      };
+
+      size_t n = sizeof(candidates) / sizeof(candidates[0]);
+      WriteLE32(inout_sample, 0x16, candidates[prng->Rand() % n]);
+      break;
+    }
+
+    case 18: {
+      // v4.1: Bit-count mutation.
+      // Goal: desync bpp from palette/pixel layout.
+      uint16_t candidates[] = {
+        0,
+        1,
+        2,
+        4,
+        8,
+        15,
+        16,
+        24,
+        31,
+        32,
+        48,
+        64,
+        0xffff
+      };
+
+      size_t n = sizeof(candidates) / sizeof(candidates[0]);
+      WriteLE16(inout_sample, 0x1C, candidates[prng->Rand() % n]);
+      break;
+    }
+  }
+
+  return true;
+}
+
+bool BmpAwareMutator::RebuildValid8bppBmp(Sample *sample, PRNG *prng) {
+  if (!IsLikelyBmp(sample)) return false;
+
+  static const uint32_t dims[] = {
+    1, 2, 3, 4, 7, 8, 15, 16, 31, 32,
+    63, 64, 127, 128, 255, 256, 257
+  };
+
+  const size_t ndims = sizeof(dims) / sizeof(dims[0]);
+
+  uint32_t width = dims[prng->Rand() % ndims];
+  uint32_t height_abs = dims[prng->Rand() % ndims];
+
+  bool top_down = prng->Rand(0, 9) == 0;
+  uint32_t height_field = top_down ? (uint32_t)(0 - height_abs) : height_abs;
+
+  uint32_t stride = (width + 3) & ~3U;
+  uint32_t pixel_size = stride * height_abs;
+  uint32_t palette_size = 256 * 4;
+  uint32_t offbits = 54 + palette_size;
+  uint32_t file_size = offbits + pixel_size;
+
+  if (file_size > Sample::max_size) return false;
+  if (file_size < offbits) return false;
+
+  uint32_t old_offbits = ReadLE32(sample, 0x0A);
+  std::vector<char> old_pixels;
+
+  if (old_offbits < sample->size) {
+    old_pixels.assign(sample->bytes + old_offbits, sample->bytes + sample->size);
+  }
+
+  sample->Resize(file_size);
+
+  sample->bytes[0] = 'B';
+  sample->bytes[1] = 'M';
+
+  WriteLE32(sample, 0x02, file_size);
+  WriteLE32(sample, 0x06, 0);
+  WriteLE32(sample, 0x0A, offbits);
+
+  WriteLE32(sample, 0x0E, 40);
+  WriteLE32(sample, 0x12, width);
+  WriteLE32(sample, 0x16, height_field);
+  WriteLE16(sample, 0x1A, 1);
+  WriteLE16(sample, 0x1C, 8);
+  WriteLE32(sample, 0x1E, 0);
+  WriteLE32(sample, 0x22, pixel_size);
+  WriteLE32(sample, 0x26, 2835);
+  WriteLE32(sample, 0x2A, 2835);
+  WriteLE32(sample, 0x2E, 256);
+  WriteLE32(sample, 0x32, 0);
+
+  for (uint32_t i = 0; i < 256; i++) {
+    size_t p = 54 + i * 4;
+    sample->bytes[p + 0] = (char)i;
+    sample->bytes[p + 1] = (char)(255 - i);
+    sample->bytes[p + 2] = (char)(prng->Rand() & 0xff);
+    sample->bytes[p + 3] = 0;
+  }
+
+  for (uint32_t i = 0; i < pixel_size; i++) {
+    if (!old_pixels.empty()) {
+      sample->bytes[offbits + i] = old_pixels[i % old_pixels.size()];
+    } else {
+      sample->bytes[offbits + i] = (char)(prng->Rand() & 0xff);
+    }
+  }
+
+  switch (prng->Rand(0, 7)) {
+    case 0:
+      WriteLE32(sample, 0x22, pixel_size + prng->Rand(1, 16));
+      break;
+
+    case 1:
+      WriteLE32(sample, 0x22, pixel_size - prng->Rand(0, pixel_size > 16 ? 16 : pixel_size));
+      break;
+
+    case 2:
+      WriteLE32(sample, 0x02, file_size + prng->Rand(1, 32));
+      break;
+
+    case 3:
+      WriteLE32(sample, 0x0A, offbits - 4);
+      break;
+
+    case 4:
+      WriteLE32(sample, 0x2E, prng->Rand(0, 300));
+      break;
+
+    case 5:
+      if (width == 255 || width == 256 || width == 257) {
+        WriteLE32(sample, 0x12, width + prng->Rand(0, 2));
+      }
+      break;
+
+    case 6:
+      if (height_abs == 255 || height_abs == 256 || height_abs == 257) {
+        WriteLE32(sample, 0x16, height_field + prng->Rand(0, 2));
+      }
+      break;
+
+    case 7:
+      WriteLE32(sample, 0x1E, prng->Rand(0, 3));
+      break;
+  }
+
+  return true;
+}
