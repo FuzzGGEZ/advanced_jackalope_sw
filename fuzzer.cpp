@@ -133,6 +133,12 @@ void Fuzzer::SetupDirectories() {
   CreateDirectory(out_dir);
   crash_dir = DirJoin(out_dir, "crashes");
   CreateDirectory(crash_dir);
+  flaky_crash_dir = DirJoin(out_dir, "flaky_crashes");
+  CreateDirectory(flaky_crash_dir);
+  unstable_crash_dir = DirJoin(out_dir, "unstable_crashes");
+  CreateDirectory(unstable_crash_dir);
+  unverified_crash_dir = DirJoin(out_dir, "unverified_crashes");
+  CreateDirectory(unverified_crash_dir);
   hangs_dir = DirJoin(out_dir, "hangs");
   CreateDirectory(hangs_dir);
   sample_dir = DirJoin(out_dir, "samples");
@@ -168,7 +174,14 @@ void Fuzzer::Run(int argc, char **argv) {
   samples_pending = 0;
   
   num_crashes = 0;
+  num_reproducible_crashes = 0;
   num_unique_crashes = 0;
+  num_flaky_crashes = 0;
+  num_unique_flaky_crashes = 0;
+  num_unstable_crashes = 0;
+  num_unique_unstable_crashes = 0;
+  num_unverified_crashes = 0;
+  num_unique_unverified_crashes = 0;
   num_hangs = 0;
   num_samples = 0;
   num_samples_discarded = 0;
@@ -216,7 +229,38 @@ void Fuzzer::Run(int argc, char **argv) {
     }
     coverage_mutex.Unlock();
     
-    printf("\nTotal execs: %lld\nUnique samples: %lld (%lld discarded)\nCrash events observed: %lld\nCrash signature buckets: %lld\nTimeout events observed: %lld\nHang artifact saving: %s\nOffsets: %zu\nExecs/s: %lld\n", total_execs, num_samples, num_samples_discarded, num_crashes, num_unique_crashes, num_hangs, save_hangs ? "enabled" : "disabled", num_offsets, (total_execs - last_execs) / secs_to_sleep);
+    printf("\n"
+      "Total execs: %lld\n"
+      "Unique samples: %lld (%lld discarded)\n"
+      "Crash events observed: %lld\n"
+      "Reproducible crash events: %lld\n"
+      "Reproducible signature buckets: %lld\n"
+      "Flaky crash events: %lld\n"
+      "Flaky signature buckets: %lld\n"
+      "Unstable crash events: %lld\n"
+      "Unstable signature buckets: %lld\n"
+      "Unverified crash events: %lld\n"
+      "Unverified signature buckets: %lld\n"
+      "Timeout events observed: %lld\n"
+      "Hang artifact saving: %s\n"
+      "Offsets: %zu\n"
+      "Execs/s: %lld\n",
+      total_execs,
+      num_samples,
+      num_samples_discarded,
+      num_crashes,
+      num_reproducible_crashes,
+      num_unique_crashes,
+      num_flaky_crashes,
+      num_unique_flaky_crashes,
+      num_unstable_crashes,
+      num_unique_unstable_crashes,
+      num_unverified_crashes,
+      num_unique_unverified_crashes,
+      num_hangs,
+      save_hangs ? "enabled" : "disabled",
+      num_offsets,
+      (total_execs - last_execs) / secs_to_sleep);
     last_execs = total_execs;
     
     if (state == FUZZING && dry_run) {
@@ -265,51 +309,102 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
   // save crashes and hangs immediately when they are detected
   if (result == CRASH) {
     string crash_desc = tc->instrumentation->GetCrashName();
-    string crash_signature = tc->instrumentation->GetCrashSignature();
-    
+    string observed_signature =
+      tc->instrumentation->GetCrashSignature();
+    string bucket_signature = observed_signature;
+    string reproduced_signature;
+
+    CrashReproductionStatus reproduction_status =
+      CRASH_UNVERIFIED;
+
     if (crash_reproduce_retries > 0) {
-        if (TryReproduceCrash(tc, sample, init_timeout, timeout) == CRASH) {
-            // get a hopefully better name
-            crash_desc = tc->instrumentation->GetCrashName();
-            crash_signature = tc->instrumentation->GetCrashSignature();
-        } else {
-            crash_desc = "flaky_" + crash_desc;
-            crash_signature = "flaky_" + crash_signature;
-        }
+      reproduction_status = TryReproduceCrash(
+        tc,
+        sample,
+        init_timeout,
+        timeout,
+        &reproduced_signature);
+
+      if (reproduction_status == CRASH_REPRODUCIBLE) {
+        // Crash-analysis runs provide the canonical location.
+        crash_desc = tc->instrumentation->GetCrashName();
+        bucket_signature = reproduced_signature;
+      } else if (!reproduced_signature.empty()) {
+        // Prefer analyzed signatures over the initial code-cache IP.
+        bucket_signature = reproduced_signature;
+      }
     }
-    
+
+    std::unordered_map<std::string, int> *signature_buckets;
+    string *artifact_dir;
+    uint64_t *event_counter;
+    uint64_t *signature_counter;
+    bool report_to_server = false;
+
+    switch (reproduction_status) {
+    case CRASH_REPRODUCIBLE:
+      signature_buckets = &unique_crashes;
+      artifact_dir = &crash_dir;
+      event_counter = &num_reproducible_crashes;
+      signature_counter = &num_unique_crashes;
+      report_to_server = true;
+      break;
+
+    case CRASH_FLAKY:
+      signature_buckets = &flaky_crash_signatures;
+      artifact_dir = &flaky_crash_dir;
+      event_counter = &num_flaky_crashes;
+      signature_counter = &num_unique_flaky_crashes;
+      break;
+
+    case CRASH_UNSTABLE:
+      signature_buckets = &unstable_crash_signatures;
+      artifact_dir = &unstable_crash_dir;
+      event_counter = &num_unstable_crashes;
+      signature_counter = &num_unique_unstable_crashes;
+      break;
+
+    case CRASH_UNVERIFIED:
+    default:
+      signature_buckets = &unverified_crash_signatures;
+      artifact_dir = &unverified_crash_dir;
+      event_counter = &num_unverified_crashes;
+      signature_counter = &num_unique_unverified_crashes;
+      break;
+    }
+
     bool should_save_crash = false;
     int duplicates = 0;
-    
+
     crash_mutex.Lock();
     num_crashes++;
+    (*event_counter)++;
 
-    auto crash_it = unique_crashes.find(crash_signature);
-    if(crash_it == unique_crashes.end()) {
+    auto crash_it = signature_buckets->find(bucket_signature);
+    if (crash_it == signature_buckets->end()) {
       should_save_crash = true;
       duplicates = 1;
-      unique_crashes[crash_signature] = 1;
-      num_unique_crashes++;
-    } else {
-      if(crash_it->second < MAX_IDENTICAL_CRASHES) {
-        should_save_crash = true;
-        crash_it->second++;
-        duplicates = crash_it->second;
-      }
+      (*signature_buckets)[bucket_signature] = 1;
+      (*signature_counter)++;
+    } else if (crash_it->second < MAX_IDENTICAL_CRASHES) {
+      should_save_crash = true;
+      crash_it->second++;
+      duplicates = crash_it->second;
     }
     crash_mutex.Unlock();
 
-    if(should_save_crash) {
-      string crash_filename = crash_desc + "_" + std::to_string(duplicates);
-      
+    if (should_save_crash) {
+      string crash_filename =
+        crash_desc + "_" + std::to_string(duplicates);
+
       output_mutex.Lock();
-      string outfile = DirJoin(crash_dir, crash_filename);
+      string outfile = DirJoin(*artifact_dir, crash_filename);
       sample->Save(outfile.c_str());
       output_mutex.Unlock();
 
-      if (server) {
+      if (server && report_to_server) {
         server_mutex.Lock();
-        server->ReportCrash(sample, crash_signature);
+        server->ReportCrash(sample, bucket_signature);
         server_mutex.Unlock();
       }
     }
@@ -328,28 +423,91 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
   return result;
 }
 
-RunResult Fuzzer::TryReproduceCrash(ThreadContext* tc, Sample* sample, uint32_t init_timeout, uint32_t timeout) {
-  RunResult result;
+CrashReproductionStatus Fuzzer::TryReproduceCrash(
+  ThreadContext* tc,
+  Sample* sample,
+  uint32_t init_timeout,
+  uint32_t timeout,
+  std::string *reproduced_signature)
+{
+  if (reproduced_signature) {
+    reproduced_signature->clear();
+  }
+
+  std::string canonical_signature;
+  std::string alternate_signature;
+  bool saw_non_crash = false;
 
   for (int i = 0; i < crash_reproduce_retries; i++) {
     total_execs++;
 
     if (!tc->sampleDelivery->DeliverSample(sample)) {
-      WARN("Error delivering sample, retrying with a clean target");
+      WARN(
+        "Error delivering sample, retrying with a clean target");
       tc->instrumentation->CleanTarget();
+
       if (!tc->sampleDelivery->DeliverSample(sample)) {
-        WARN("Repeatedly failed to deliver sample when reproducing a crash, the crashs will be saved as flaky");
-        return HANG;
+        WARN(
+          "Repeatedly failed to deliver sample while "
+          "reproducing a crash");
+        return CRASH_FLAKY;
       }
     }
 
-    result = tc->instrumentation->RunWithCrashAnalysis(tc->target_argc, tc->target_argv, init_timeout, timeout);
+    RunResult result =
+      tc->instrumentation->RunWithCrashAnalysis(
+        tc->target_argc,
+        tc->target_argv,
+        init_timeout,
+        timeout);
+
     tc->instrumentation->ClearCoverage();
 
-    if (result == CRASH) return result;
+    if (result != CRASH) {
+      saw_non_crash = true;
+      continue;
+    }
+
+    std::string current_signature =
+      tc->instrumentation->GetCrashSignature();
+
+    if (canonical_signature.empty()) {
+      canonical_signature = current_signature;
+    } else if (
+      current_signature != canonical_signature &&
+      alternate_signature.empty())
+    {
+      alternate_signature = current_signature;
+    }
   }
 
-  return result;
+  if (reproduced_signature) {
+    if (!alternate_signature.empty()) {
+      if (canonical_signature < alternate_signature) {
+        *reproduced_signature =
+          canonical_signature +
+          "_varies_as_" +
+          alternate_signature;
+      } else {
+        *reproduced_signature =
+          alternate_signature +
+          "_varies_as_" +
+          canonical_signature;
+      }
+    } else {
+      *reproduced_signature = canonical_signature;
+    }
+  }
+
+  if (saw_non_crash) {
+    return CRASH_FLAKY;
+  }
+
+  if (!alternate_signature.empty()) {
+    return CRASH_UNSTABLE;
+  }
+
+  return CRASH_REPRODUCIBLE;
 }
 
 void Fuzzer::SaveSample(ThreadContext *tc, Sample *sample, uint32_t init_timeout, uint32_t timeout, Sample *original_sample) {
