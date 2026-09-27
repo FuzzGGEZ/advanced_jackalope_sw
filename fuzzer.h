@@ -50,6 +50,13 @@ class CoverageClient;
 
 #define MAX_IDENTICAL_CRASHES 4
 
+enum CrashReproductionStatus {
+  CRASH_REPRODUCIBLE,
+  CRASH_FLAKY,
+  CRASH_UNSTABLE,
+  CRASH_UNVERIFIED
+};
+
 // save state every 5 minutes
 #define FUZZER_SAVE_INERVAL (5 * 60)
 
@@ -179,7 +186,12 @@ protected:
   void SaveSample(ThreadContext *tc, Sample *sample, uint32_t init_timeout, uint32_t timeout, Sample *original_sample);
   RunResult RunSample(ThreadContext *tc, Sample *sample, int *has_new_coverage, bool trim, bool report_to_server, uint32_t init_timeout, uint32_t timeout, Sample *original_sample);
   RunResult RunSampleAndGetCoverage(ThreadContext* tc, Sample* sample, Coverage* coverage, uint32_t init_timeout, uint32_t timeout);
-  RunResult TryReproduceCrash(ThreadContext* tc, Sample* sample, uint32_t init_timeout, uint32_t timeout);
+  CrashReproductionStatus TryReproduceCrash(
+    ThreadContext* tc,
+    Sample* sample,
+    uint32_t init_timeout,
+    uint32_t timeout,
+    std::string *reproduced_signature);
   void MinimizeSample(ThreadContext *tc, Sample *sample, Coverage* stable_coverage, uint32_t init_timeout, uint32_t timeout);
 
   int InterestingSample(ThreadContext *tc, Sample *sample, Coverage *stableCoverage, Coverage *variableCoverage);
@@ -190,7 +202,14 @@ protected:
   void ProcessSample(ThreadContext* tc, FuzzerJob* job);
 
   uint64_t num_crashes;
+  uint64_t num_reproducible_crashes;
   uint64_t num_unique_crashes;
+  uint64_t num_flaky_crashes;
+  uint64_t num_unique_flaky_crashes;
+  uint64_t num_unstable_crashes;
+  uint64_t num_unique_unstable_crashes;
+  uint64_t num_unverified_crashes;
+  uint64_t num_unique_unverified_crashes;
   uint64_t num_hangs;
   uint64_t num_samples;
   uint64_t num_samples_discarded;
@@ -206,6 +225,9 @@ protected:
   std::string delivery_dir;
   std::string sample_dir;
   std::string crash_dir;
+  std::string flaky_crash_dir;
+  std::string unstable_crash_dir;
+  std::string unverified_crash_dir;
   std::string hangs_dir;
 
   //std::string target_cmd;
@@ -259,6 +281,9 @@ protected:
   
   Mutex crash_mutex;
   std::unordered_map<std::string, int> unique_crashes;
+  std::unordered_map<std::string, int> flaky_crash_signatures;
+  std::unordered_map<std::string, int> unstable_crash_signatures;
+  std::unordered_map<std::string, int> unverified_crash_signatures;
   
   uint64_t last_save_time;
   
