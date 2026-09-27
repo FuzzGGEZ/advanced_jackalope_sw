@@ -40,6 +40,7 @@ public:
   virtual void IgnoreCoverage(Coverage &coverage) = 0;
 
   virtual std::string GetCrashName() { return "crash"; };
+  virtual std::string GetCrashSignature() { return GetCrashName(); };
 
   virtual uint64_t GetReturnValue() { return 0; }
 

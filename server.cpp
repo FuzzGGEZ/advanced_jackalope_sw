@@ -559,7 +559,7 @@ void CoverageServer::StatusThread() {
 
     printf("Num connections: %zu\n", num_connections);
     printf("Num samples: %zu\n", num_samples);
-    printf("Num crashes: %zu (%zu unique)\n", num_crashes, num_unique_crashes);
+    printf("Crash events observed: %zu\nCrash signature buckets: %zu\n", num_crashes, num_unique_crashes);
     printf("\n");
 
     if (seconds_since_last_save > SERVER_SAVE_INERVAL) {

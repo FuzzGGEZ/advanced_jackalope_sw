@@ -185,6 +185,13 @@ std::string TinyInstInstrumentation::GetCrashName() {
   return stream.str();
 }
 
+std::string TinyInstInstrumentation::GetCrashSignature() {
+  std::string crash_name = GetCrashName();
+  size_t separator = crash_name.rfind("_");
+  if (separator == std::string::npos) return crash_name;
+  return crash_name.substr(0, separator);
+}
+
 uint64_t TinyInstInstrumentation::GetReturnValue() {
   return instrumentation->GetTargetReturnValue();
 }

@@ -43,6 +43,7 @@ public:
   uint64_t GetReturnValue() override;
 
   std::string GetCrashName() override;
+  std::string GetCrashSignature() override;
 
 protected:
   LiteCov * instrumentation;
