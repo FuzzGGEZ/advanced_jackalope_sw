@@ -62,8 +62,8 @@ Prerequisite: Python 3
 
 ```
 cd Jackalope
-git clone --recurse-submodules git@github.com:googleprojectzero/TinyInst.git
-(alternately: git clone --recurse-submodules https://github.com/googleprojectzero/TinyInst.git)
+git clone --recurse-submodules git@github.com:FuzzGGEZ/TinyInst.git
+(alternately: git clone --recurse-submodules https://github.com/FuzzGGEZ/TinyInst.git)
 mkdir build
 cd build
 cmake <generator arguments> ..
@@ -212,3 +212,12 @@ A: Use the `-t1` flag to set/increase the initialization timeout.
 ## Disclaimer
 
 This is not an official Google product.
+
+
+### Stack-based crash signatures
+
+On Windows, -stack_crash_signature deduplicates crashes using the exception type and the first two executable non-system module frames represented as module-relative addresses. If suitable stack frames cannot be recovered, Jackalope falls back to its existing exception-type and instruction-pointer signature.
+
+Stack collection is disabled by default and is enabled only when -stack_crash_signature is specified.
+
+This feature requires the TinyInst stack-capture support available in [FuzzGGEZ/TinyInst commit 7ce98a13e427f3f575a2e0c87397ea5ffcdcf455](https://github.com/FuzzGGEZ/TinyInst/commit/7ce98a13e427f3f575a2e0c87397ea5ffcdcf455).

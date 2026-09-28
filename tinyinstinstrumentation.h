@@ -49,6 +49,7 @@ public:
 protected:
   LiteCov * instrumentation;
   bool persist;
+  bool stack_crash_signature;
   int num_iterations;
   int cur_iteration;
 };

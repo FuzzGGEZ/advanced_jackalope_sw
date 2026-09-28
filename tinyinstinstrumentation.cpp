@@ -34,6 +34,11 @@ void TinyInstInstrumentation::Init(int argc, char **argv) {
   instrumentation->Init(argc, argv);
 
   persist = GetBinaryOption("-persist", argc, argv, false);
+  stack_crash_signature =
+    GetBinaryOption("-stack_crash_signature", argc, argv, false);
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
+  instrumentation->SetCrashStackCollection(stack_crash_signature);
+#endif
   num_iterations = GetIntOption("-iterations", argc, argv, 1);
 }
 
@@ -256,6 +261,38 @@ std::string TinyInstInstrumentation::GetCrashName() {
 }
 
 std::string TinyInstInstrumentation::GetCrashSignature() {
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
+  if (stack_crash_signature) {
+    auto exception = instrumentation->GetLastException();
+
+    if (!exception.stack_signature_frames.empty()) {
+      std::string crash_name = GetCrashName();
+      size_t access_separator = crash_name.rfind("_");
+      size_t ip_separator = std::string::npos;
+
+      if (access_separator != std::string::npos &&
+          access_separator > 0) {
+        ip_separator = crash_name.rfind(
+          "_", access_separator - 1);
+      }
+
+      if (ip_separator != std::string::npos) {
+        std::stringstream stream;
+        stream << crash_name.substr(0, ip_separator);
+        stream << "_stack";
+
+        for (size_t i = 0;
+             i < exception.stack_signature_frames.size() && i < 2;
+             i++) {
+          stream << "_";
+          stream << exception.stack_signature_frames[i];
+        }
+
+        return stream.str();
+      }
+    }
+  }
+#endif
   std::string crash_name = GetCrashName();
   size_t separator = crash_name.rfind("_");
   if (separator == std::string::npos) return crash_name;
