@@ -108,6 +108,7 @@ void Fuzzer::ParseOptions(int argc, char **argv) {
   clean_target_on_coverage = GetBinaryOption("-clean_target_on_coverage", argc, argv, true);
   coverage_reproduce_retries = GetIntOption("-coverage_retry", argc, argv, DEFAULT_COVERAGE_REPRODUCE_RETRIES);
   crash_reproduce_retries = GetIntOption("-crash_retry", argc, argv, DEFAULT_CRASH_REPRODUCE_RETRIES);
+  native_crash_retries = GetIntOption("-native_crash_retry", argc, argv, 0);
 
   minimize_samples = GetBinaryOption("-minimize_samples", argc, argv, true);
 
@@ -133,6 +134,8 @@ void Fuzzer::SetupDirectories() {
   CreateDirectory(out_dir);
   crash_dir = DirJoin(out_dir, "crashes");
   CreateDirectory(crash_dir);
+  debugger_only_crash_dir = DirJoin(out_dir, "debugger_only_crashes");
+  CreateDirectory(debugger_only_crash_dir);
   flaky_crash_dir = DirJoin(out_dir, "flaky_crashes");
   CreateDirectory(flaky_crash_dir);
   unstable_crash_dir = DirJoin(out_dir, "unstable_crashes");
@@ -176,6 +179,8 @@ void Fuzzer::Run(int argc, char **argv) {
   num_crashes = 0;
   num_reproducible_crashes = 0;
   num_unique_crashes = 0;
+  num_debugger_only_crashes = 0;
+  num_unique_debugger_only_crashes = 0;
   num_flaky_crashes = 0;
   num_unique_flaky_crashes = 0;
   num_unstable_crashes = 0;
@@ -235,6 +240,9 @@ void Fuzzer::Run(int argc, char **argv) {
       "Crash events observed: %lld\n"
       "Reproducible crash events: %lld\n"
       "Reproducible signature buckets: %lld\n"
+      "Reproducible crash scope: %s\n"
+      "Debugger-only crash events: %lld\n"
+      "Debugger-only signature buckets: %lld\n"
       "Flaky crash events: %lld\n"
       "Flaky signature buckets: %lld\n"
       "Unstable crash events: %lld\n"
@@ -251,6 +259,9 @@ void Fuzzer::Run(int argc, char **argv) {
       num_crashes,
       num_reproducible_crashes,
       num_unique_crashes,
+      native_crash_retries > 0 ? "native-confirmed" : "debugger-reproduced (native unchecked)",
+      num_debugger_only_crashes,
+      num_unique_debugger_only_crashes,
       num_flaky_crashes,
       num_unique_flaky_crashes,
       num_unstable_crashes,
@@ -329,6 +340,11 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
         // Crash-analysis runs provide the canonical location.
         crash_desc = tc->instrumentation->GetCrashName();
         bucket_signature = reproduced_signature;
+
+        if (native_crash_retries > 0) {
+          reproduction_status = TryVerifyNativeCrash(
+            tc, sample, timeout);
+        }
       } else if (!reproduced_signature.empty()) {
         // Prefer analyzed signatures over the initial code-cache IP.
         bucket_signature = reproduced_signature;
@@ -348,6 +364,13 @@ RunResult Fuzzer::RunSampleAndGetCoverage(ThreadContext *tc, Sample *sample, Cov
       event_counter = &num_reproducible_crashes;
       signature_counter = &num_unique_crashes;
       report_to_server = true;
+      break;
+
+    case CRASH_DEBUGGER_ONLY:
+      signature_buckets = &debugger_only_crash_signatures;
+      artifact_dir = &debugger_only_crash_dir;
+      event_counter = &num_debugger_only_crashes;
+      signature_counter = &num_unique_debugger_only_crashes;
       break;
 
     case CRASH_FLAKY:
@@ -508,6 +531,47 @@ CrashReproductionStatus Fuzzer::TryReproduceCrash(
   }
 
   return CRASH_REPRODUCIBLE;
+}
+
+CrashReproductionStatus Fuzzer::TryVerifyNativeCrash(
+  ThreadContext* tc,
+  Sample* sample,
+  uint32_t timeout)
+{
+  int native_crashes = 0;
+  int native_normal = 0;
+
+  for (int i = 0; i < native_crash_retries; i++) {
+    total_execs++;
+
+    if (!tc->sampleDelivery->DeliverSample(sample)) {
+      return CRASH_UNVERIFIED;
+    }
+
+    RunResult native_result =
+      tc->instrumentation->RunNative(
+        tc->target_argc,
+        tc->target_argv,
+        timeout);
+
+    if (native_result == CRASH) {
+      native_crashes++;
+    } else if (native_result == OK) {
+      native_normal++;
+    } else {
+      return CRASH_UNVERIFIED;
+    }
+  }
+
+  if (native_crashes == native_crash_retries) {
+    return CRASH_REPRODUCIBLE;
+  }
+
+  if (native_normal == native_crash_retries) {
+    return CRASH_DEBUGGER_ONLY;
+  }
+
+  return CRASH_FLAKY;
 }
 
 void Fuzzer::SaveSample(ThreadContext *tc, Sample *sample, uint32_t init_timeout, uint32_t timeout, Sample *original_sample) {

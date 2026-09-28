@@ -32,6 +32,7 @@ public:
 
   RunResult Run(int argc, char** argv, uint32_t init_timeout, uint32_t timeout) override;
   RunResult RunWithCrashAnalysis(int argc, char** argv, uint32_t init_timeout, uint32_t timeout) override;
+  RunResult RunNative(int argc, char** argv, uint32_t timeout) override;
 
   void CleanTarget() override;
 

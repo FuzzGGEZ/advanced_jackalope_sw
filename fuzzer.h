@@ -54,7 +54,8 @@ enum CrashReproductionStatus {
   CRASH_REPRODUCIBLE,
   CRASH_FLAKY,
   CRASH_UNSTABLE,
-  CRASH_UNVERIFIED
+  CRASH_UNVERIFIED,
+  CRASH_DEBUGGER_ONLY
 };
 
 // save state every 5 minutes
@@ -192,6 +193,10 @@ protected:
     uint32_t init_timeout,
     uint32_t timeout,
     std::string *reproduced_signature);
+  CrashReproductionStatus TryVerifyNativeCrash(
+    ThreadContext* tc,
+    Sample* sample,
+    uint32_t timeout);
   void MinimizeSample(ThreadContext *tc, Sample *sample, Coverage* stable_coverage, uint32_t init_timeout, uint32_t timeout);
 
   int InterestingSample(ThreadContext *tc, Sample *sample, Coverage *stableCoverage, Coverage *variableCoverage);
@@ -204,6 +209,8 @@ protected:
   uint64_t num_crashes;
   uint64_t num_reproducible_crashes;
   uint64_t num_unique_crashes;
+  uint64_t num_debugger_only_crashes;
+  uint64_t num_unique_debugger_only_crashes;
   uint64_t num_flaky_crashes;
   uint64_t num_unique_flaky_crashes;
   uint64_t num_unstable_crashes;
@@ -225,6 +232,7 @@ protected:
   std::string delivery_dir;
   std::string sample_dir;
   std::string crash_dir;
+  std::string debugger_only_crash_dir;
   std::string flaky_crash_dir;
   std::string unstable_crash_dir;
   std::string unverified_crash_dir;
@@ -265,6 +273,7 @@ protected:
 
   int coverage_reproduce_retries;
   int crash_reproduce_retries;
+  int native_crash_retries;
   bool clean_target_on_coverage;
   
   bool should_restore_state;
@@ -281,6 +290,7 @@ protected:
   
   Mutex crash_mutex;
   std::unordered_map<std::string, int> unique_crashes;
+  std::unordered_map<std::string, int> debugger_only_crash_signatures;
   std::unordered_map<std::string, int> flaky_crash_signatures;
   std::unordered_map<std::string, int> unstable_crash_signatures;
   std::unordered_map<std::string, int> unverified_crash_signatures;

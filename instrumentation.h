@@ -32,6 +32,10 @@ public:
     return Run(argc, argv, init_timeout, timeout);
   }
 
+  virtual RunResult RunNative(int argc, char** argv, uint32_t timeout) {
+    return OTHER_ERROR;
+  }
+
   virtual void CleanTarget() = 0;
 
   virtual bool HasNewCoverage() = 0;

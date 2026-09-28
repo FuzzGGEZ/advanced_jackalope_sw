@@ -21,6 +21,12 @@ limitations under the License.
 #include "litecov.h"
 
 #include <sstream>
+#include <vector>
+
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
+#include <windows.h>
+#include <process.h>
+#endif
 
 
 void TinyInstInstrumentation::Init(int argc, char **argv) {
@@ -134,6 +140,70 @@ RunResult TinyInstInstrumentation::RunWithCrashAnalysis(int argc, char** argv, u
   instrumentation->Kill();
   instrumentation->EnableInstrumentation();
   return ret;
+}
+
+RunResult TinyInstInstrumentation::RunNative(
+  int argc,
+  char** argv,
+  uint32_t timeout)
+{
+  instrumentation->Kill();
+
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
+  if ((argc <= 0) || !argv || !argv[0]) {
+    return OTHER_ERROR;
+  }
+
+  std::vector<const char *> native_argv;
+  for (int i = 0; i < argc; i++) {
+    native_argv.push_back(argv[i]);
+  }
+  native_argv.push_back(NULL);
+
+  intptr_t process_value = _spawnvp(
+    _P_NOWAIT,
+    argv[0],
+    native_argv.data());
+
+  if (process_value == -1) {
+    return OTHER_ERROR;
+  }
+
+  HANDLE process_handle =
+    reinterpret_cast<HANDLE>(process_value);
+
+  DWORD wait_result =
+    WaitForSingleObject(process_handle, timeout);
+
+  if (wait_result == WAIT_TIMEOUT) {
+    TerminateProcess(process_handle, 1);
+    WaitForSingleObject(process_handle, INFINITE);
+    CloseHandle(process_handle);
+    return HANG;
+  }
+
+  if (wait_result != WAIT_OBJECT_0) {
+    TerminateProcess(process_handle, 1);
+    CloseHandle(process_handle);
+    return OTHER_ERROR;
+  }
+
+  DWORD exit_code = 0;
+  if (!GetExitCodeProcess(process_handle, &exit_code)) {
+    CloseHandle(process_handle);
+    return OTHER_ERROR;
+  }
+
+  CloseHandle(process_handle);
+
+  if ((exit_code & 0xF0000000UL) == 0xC0000000UL) {
+    return CRASH;
+  }
+
+  return OK;
+#else
+  return OTHER_ERROR;
+#endif
 }
 
 void TinyInstInstrumentation::CleanTarget() {
