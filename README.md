@@ -220,4 +220,6 @@ On Windows, -stack_crash_signature deduplicates crashes using the exception type
 
 Stack collection is disabled by default and is enabled only when -stack_crash_signature is specified.
 
-This feature requires the TinyInst stack-capture support available in [FuzzGGEZ/TinyInst commit 7ce98a13e427f3f575a2e0c87397ea5ffcdcf455](https://github.com/FuzzGGEZ/TinyInst/commit/7ce98a13e427f3f575a2e0c87397ea5ffcdcf455).
+This feature requires the TinyInst stack-capture support available in [FuzzGGEZ/TinyInst commit f5ccda242844cb44ef7802e571e409437736c6b9](https://github.com/FuzzGGEZ/TinyInst/commit/f5ccda242844cb44ef7802e571e409437736c6b9).
+
+If Windows module enumeration fails while collecting a crash stack, TinyInst leaves the stack signature empty and Jackalope falls back to its existing exception-type and instruction-pointer signature instead of terminating the fuzzing session.
